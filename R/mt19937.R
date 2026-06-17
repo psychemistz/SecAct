@@ -1,16 +1,17 @@
 # =========================================================
 # Pure R implementation of GSL's MT19937 (Mersenne Twister)
 #
-# CANONICAL SOURCE for this file. A copy lives in
-# RidgeCuda/R/mt19937.R — keep them in sync.
+# CANONICAL SOURCE for this file. The same algorithm lives in
+# FlashReg's C kernel (ridge_omp_generate_perm_table) and CUDA
+# kernel — all three implementations share seed 0 and produce
+# byte-identical permutation tables, which is what makes the
+# cross-backend parity test work.
 #
 # Drift canary: tests/testthat/test-backend-parity.R calls
 # .ridge_dispatch with backend="cpu-pure" and backend="cpu-fast"
 # and asserts bit-identical outputs. If this file drifts from
 # the GSL MT19937 (seed 0) contract the cpu-pure output diverges
-# from RidgeFast's C-side build_perm_table and the test fails.
-# The RidgeCuda copy is not exercised by SecAct's tests — run
-# RidgeCuda/tests/test_gpu_parity.sbatch after editing it.
+# from FlashReg's C-side and the test fails.
 #
 # Produces output identical to gsl_rng_mt19937 with seed 0.
 # Algorithm: Matsumoto & Nishimura (1998) with 2002 init.
@@ -114,9 +115,9 @@
 #' Pure R permutation table using GSL-compatible MT19937
 #'
 #' Generates the same permutation table as GSL's MT19937 (seed 0) with
-#' Fisher-Yates shuffle. Used as the canonical RNG across SecAct,
-#' RidgeFast (CPU), and RidgeCuda (GPU) so permutation sequences
-#' match bitwise across backends.
+#' Fisher-Yates shuffle. Used as the canonical RNG across SecAct and
+#' FlashReg (CPU + GPU) so permutation sequences match bitwise across
+#' backends.
 #'
 #' @param n Number of samples (array length to shuffle).
 #' @param nrand Number of permutations.

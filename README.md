@@ -86,11 +86,10 @@ The R package has been installed successfully on Operating Systems:
 - R packages: Matrix, ggplot2, reshape2, patchwork, NMF, akima,
   gganimate, metap, circlize, ComplexHeatmap, ggalluvial, networkD3,
   survival, survminer.
-- Optional accelerators (see below):
-  [RidgeFast](https://github.com/psychemistz/RidgeFast) (CPU, requires
-  GSL) and/or
-  [RidgeCuda](https://github.com/psychemistz/RidgeCuda) (GPU, requires
-  NVIDIA CUDA Toolkit).
+- Optional accelerator (see below):
+  [FlashReg](https://github.com/data2intelligence/FlashReg) (one
+  package, both CPU and GPU paths; GSL is required, NVIDIA CUDA
+  Toolkit is optional).
 - Optional `rhdf5` for HDF5 streaming of large inputs/outputs in batch
   mode.
 
@@ -98,18 +97,20 @@ The R package has been installed successfully on Operating Systems:
 
 The default ridge + permutation kernel is pure R with no compiled
 dependencies — SecAct installs and runs anywhere R runs. For large
-datasets, two optional accelerator packages provide drop-in speed-ups:
+datasets, install
+[FlashReg](https://github.com/data2intelligence/FlashReg) to enable
+the C+OpenMP CPU backend (and optionally the CUDA GPU backend):
 
-- [RidgeFast](https://github.com/psychemistz/RidgeFast) —
-  multi-threaded CPU (GSL + OpenMP)
-- [RidgeCuda](https://github.com/psychemistz/RidgeCuda) — NVIDIA GPU
-  (CUDA)
+- `FlashReg::ridge(backend = "omp")` — multi-threaded CPU (GSL +
+  OpenMP)
+- `FlashReg::ridge(backend = "cuda_native")` — NVIDIA GPU (CUDA),
+  built only when nvcc is present at install time
 
-With either installed,
+With FlashReg installed,
 `SecAct.activity.inference(..., backend = "auto")` (the default) picks
-GPU \> CPU-fast \> pure-R automatically. At `rng_method = "mt19937"`
-(default) and `ncores = 1`, output is bit-identical across all three
-backends.
+GPU \> CPU-fast \> pure-R automatically — FlashReg detects CUDA
+availability at runtime. At `rng_method = "mt19937"` (default) and
+`ncores = 1`, output is bit-identical across all three backends.
 
 For memory-constrained workflows, set `batch_size` to process samples
 in column-batches:

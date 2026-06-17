@@ -1,9 +1,11 @@
 #' Dispatch ridge+permutation over Y-column batches
 #'
 #' Memory-efficient version of \code{\link{.ridge_dispatch}}. Processes
-#' \code{Y} in column-batches, forwarding to the chosen backend's
-#' \code{ridge_batch()} (RidgeCuda > RidgeFast) or to the in-house
-#' pure-R batched path. Supports HDF5 Y input and streaming HDF5 output.
+#' \code{Y} in column-batches, calling the resolved backend on each
+#' batch. With FlashReg installed, the per-batch kernel is the
+#' \code{FlashReg::ridge()} dispatcher (GPU or C+OpenMP CPU);
+#' otherwise the pure-R loop is used. The same column-batching code
+#' handles HDF5 Y input and streaming HDF5 output for all backends.
 #'
 #' @keywords internal
 .ridge_batch_dispatch <- function(X, Y, lambda, nrand,
@@ -20,26 +22,31 @@
             " (batch_size=", batch_size, ", rng_method=", rng_method, ")")
   }
 
-  if (chosen == "gpu") {
-    RidgeCuda::ridge_batch(X = X, Y = Y, lambda = lambda, nrand = nrand,
-                           ncores = ncores, rng_method = rng_method,
-                           batch_size = batch_size, reader = reader,
-                           n_samples = n_samples, output_h5 = output_h5)
-  } else if (chosen == "cpu-fast") {
-    RidgeFast::ridge_batch(X = X, Y = Y, lambda = lambda, nrand = nrand,
-                           ncores = ncores, rng_method = rng_method,
-                           batch_size = batch_size, reader = reader,
-                           n_samples = n_samples, output_h5 = output_h5)
+  if (chosen %in% c("gpu", "cpu-fast")) {
+    if (!requireNamespace("FlashReg", quietly = TRUE)) {
+      stop("backend='", chosen, "' requires the FlashReg package. ",
+           "Install it from https://github.com/data2intelligence/FlashReg ",
+           "or set backend='cpu-pure' to use the in-house pure-R loop.")
+    }
+    flashreg_backend <- .secact_to_flashreg_backend(chosen)
+    kernel_fn <- function(X, Y_batch, lambda, nrand) {
+      FlashReg::ridge(X = X, Y = Y_batch, lambda = lambda, nrand = nrand,
+                      backend = flashreg_backend,
+                      ncores = ncores, rng_method = rng_method)
+    }
   } else {
     if (rng_method != "mt19937") {
-      stop("rng_method='", rng_method, "' requires RidgeFast or RidgeCuda; ",
+      stop("rng_method='", rng_method, "' requires FlashReg; ",
            "pure-R supports only 'mt19937'.")
     }
-    .ridge_pureR_batch(X, Y, lambda, nrand,
-                       batch_size = batch_size,
-                       reader = reader, n_samples = n_samples,
-                       output_h5 = output_h5)
+    kernel_fn <- .ridge_pureR
   }
+
+  .ridge_pureR_batch(X, Y, lambda, nrand,
+                     batch_size = batch_size,
+                     reader = reader, n_samples = n_samples,
+                     output_h5 = output_h5,
+                     kernel_fn = kernel_fn)
 }
 
 #' Pure-R batched ridge+permutation
@@ -54,7 +61,9 @@
 .ridge_pureR_batch <- function(X, Y, lambda, nrand,
                                 batch_size = 5000L,
                                 reader = NULL, n_samples = NULL,
-                                output_h5 = NULL) {
+                                output_h5 = NULL,
+                                kernel_fn = NULL) {
+  if (is.null(kernel_fn)) kernel_fn <- .ridge_pureR
   if (!is.matrix(X)) X <- as.matrix(X)
   storage.mode(X) <- "double"
   n <- nrow(X); p <- ncol(X)
@@ -99,7 +108,7 @@
     storage.mode(Y_batch) <- "double"
     if (is.null(colnames(Y_batch))) colnames(Y_batch) <- samp_names[s:e]
 
-    res <- .ridge_pureR(X, Y_batch, lambda, nrand)
+    res <- kernel_fn(X, Y_batch, lambda, nrand)
 
     if (h5_out) {
       for (nm in c("beta", "se", "zscore", "pvalue")) {

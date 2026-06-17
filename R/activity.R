@@ -1,8 +1,8 @@
 #' @title Secreted protein activity inference (pure R)
 #' @description Infer the activity of over 1000 secreted proteins from gene
-#'   expression profiles using a pure-R ridge + permutation kernel. No GSL
-#'   or OpenMP required. For large datasets, install \code{RidgeFast}
-#'   (CPU accelerator) or \code{RidgeCuda} (GPU accelerator) and use
+#'   expression profiles using a pure-R ridge + permutation kernel. No
+#'   external accelerators are required. For large datasets, install
+#'   \code{FlashReg} (CPU + GPU accelerator) and use
 #'   \code{SecAct.activity.inference} with \code{backend="auto"}.
 #' @param Y Gene expression matrix with gene symbol (row) x sample (column).
 #' @param SigMat Secreted protein signature matrix.
@@ -49,8 +49,12 @@ SecAct.inference.r <- function(Y, SigMat = "SecAct", lambda = 5e+05, nrand = 100
 #' @param nrand Number of randomization in the permutation test, with a default value of 1000.
 #' @param ncores Number of threads for accelerator backends (ignored by pure R). Default 1.
 #' @param backend One of \code{"auto"}, \code{"gpu"}, \code{"cpu-fast"}, \code{"cpu-pure"}.
-#'   \code{"auto"} picks GPU (RidgeCuda) > CPU-fast (RidgeFast) > CPU-pure
-#'   depending on what is installed. Default \code{"auto"}.
+#'   \code{"auto"} picks the best FlashReg backend available:
+#'   GPU (\code{FlashReg::ridge(backend="cuda_native")}) > CPU-fast
+#'   (\code{FlashReg::ridge(backend="omp")}) > CPU-pure (in-house loop)
+#'   depending on what FlashReg detects at install / load time. Default
+#'   \code{"auto"}. Legacy backend names \code{"gpu"} / \code{"cpu-fast"}
+#'   are kept for backward compatibility.
 #' @param rng_method RNG for permutations. \code{"mt19937"} (default) is
 #'   GSL-compatible MT19937 seed 0 — bit-identical across backends when
 #'   \code{ncores=1}. Accelerators may support \code{"srand"} for faster,
