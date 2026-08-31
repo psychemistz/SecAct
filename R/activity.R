@@ -13,7 +13,7 @@
 #' @param nrand Number of randomization in the permutation test, with a default value of 1000.
 #' @param ncores Number of threads for accelerator backends (ignored by pure R). Default 1.
 #' @param backend One of \code{"auto"}, \code{"gpu"}, \code{"cpu-fast"}, \code{"cpu-pure"}.
-#'   \code{"auto"} picks GPU (RidgeCuda) > CPU-fast (RidgeFast) > CPU-pure
+#'   \code{"auto"} picks GPU (FlashReg cuda_native) > CPU-fast (FlashReg omp) > CPU-pure
 #'   depending on what is installed. Default \code{"auto"}.
 #' @param rng_method RNG for permutations. \code{"mt19937"} (default) is
 #'   GSL-compatible MT19937 seed 0 — bit-identical across backends when
@@ -158,7 +158,7 @@ SecAct.activity.inference <- function(
 #' @param nrand Number of randomization in the permutation test, with a default value 1000.
 #' @param ncores Number of threads for accelerator backends (ignored by pure R). Default 1.
 #' @param backend One of \code{"auto"}, \code{"gpu"}, \code{"cpu-fast"}, \code{"cpu-pure"}.
-#'   \code{"auto"} picks GPU (RidgeCuda) > CPU-fast (RidgeFast) > CPU-pure
+#'   \code{"auto"} picks GPU (FlashReg cuda_native) > CPU-fast (FlashReg omp) > CPU-pure
 #'   depending on what is installed. Default \code{"auto"}.
 #' @param rng_method RNG for permutations. \code{"mt19937"} (default) is
 #'   GSL-compatible MT19937 seed 0 — bit-identical across backends when
@@ -254,7 +254,7 @@ SecAct.activity.inference.ST <- function(
 #' @param nrand Number of randomization in the permutation test, with a default value 1000.
 #' @param ncores Number of threads for accelerator backends (ignored by pure R). Default 1.
 #' @param backend One of \code{"auto"}, \code{"gpu"}, \code{"cpu-fast"}, \code{"cpu-pure"}.
-#'   \code{"auto"} picks GPU (RidgeCuda) > CPU-fast (RidgeFast) > CPU-pure
+#'   \code{"auto"} picks GPU (FlashReg cuda_native) > CPU-fast (FlashReg omp) > CPU-pure
 #'   depending on what is installed. Default \code{"auto"}.
 #' @param rng_method RNG for permutations. \code{"mt19937"} (default) is
 #'   GSL-compatible MT19937 seed 0 — bit-identical across backends when

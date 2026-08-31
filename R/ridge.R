@@ -55,24 +55,23 @@
   backend <- match.arg(backend)
   if (backend != "auto") return(backend)
 
-  if (requireNamespace("RidgeCuda", quietly = TRUE)) {
-    gpu_ok <- tryCatch(
-      RidgeCuda::check_cuda_available(),
-      error = function(e) FALSE
-    )
+  # FlashReg unifies the CPU (omp) and GPU (cuda_native) fast paths in one
+  # package, replacing the legacy RidgeFast + RidgeCuda accelerators.
+  if (requireNamespace("FlashReg", quietly = TRUE)) {
+    gpu_ok <- tryCatch(FlashReg::cuda_available(), error = function(e) FALSE)
     if (isTRUE(gpu_ok)) return("gpu")
+    return("cpu-fast")
   }
-  if (requireNamespace("RidgeFast", quietly = TRUE)) return("cpu-fast")
   "cpu-pure"
 }
 
 #' Dispatch ridge+permutation call to installed backend
 #'
-#' Picks GPU (RidgeCuda) > CPU-fast (RidgeFast) > CPU-pure (this
-#' package) based on \code{backend}. All three accelerators share the
-#' API \code{ridge(X, Y, lambda, nrand, ncores, rng_method)}.
-#' With \code{rng_method="mt19937"} and \code{ncores=1}, results are
-#' bit-identical across backends.
+#' Picks GPU (FlashReg cuda_native) > CPU-fast (FlashReg omp) > CPU-pure
+#' (this package) based on \code{backend}. The fast paths call
+#' \code{FlashReg::ridge()}; the pure-R fallback is
+#' \code{.ridge_pureR}. With \code{rng_method="mt19937"} and
+#' \code{ncores=1}, results are bit-identical across backends.
 #'
 #' @keywords internal
 .ridge_dispatch <- function(X, Y, lambda, nrand,
@@ -87,16 +86,16 @@
   }
 
   if (chosen == "gpu") {
-    message(paste0("RidgeCuda used."))
-    RidgeCuda::ridge(X = X, Y = Y, lambda = lambda, nrand = nrand,
-                                 ncores = ncores, rng_method = rng_method)
+    message("FlashReg (cuda_native) used.")
+    FlashReg::ridge(X = X, Y = Y, lambda = lambda, n_perm = nrand,
+                    backend = "cuda_native", ncores = ncores, rng_method = rng_method)
   } else if (chosen == "cpu-fast") {
-    message(paste0("RidgeFast used."))
-    RidgeFast::ridge(X = X, Y = Y, lambda = lambda, nrand = nrand,
-                                 ncores = ncores, rng_method = rng_method)
+    message("FlashReg (omp) used.")
+    FlashReg::ridge(X = X, Y = Y, lambda = lambda, n_perm = nrand,
+                    backend = "omp", ncores = ncores, rng_method = rng_method)
   } else {
     if (rng_method != "mt19937") {
-      stop("rng_method='", rng_method, "' requires RidgeFast or RidgeCuda; ",
+      stop("rng_method='", rng_method, "' requires FlashReg; ",
            "pure-R supports only 'mt19937'.")
     }
     .ridge_pureR(X, Y, lambda, nrand)
@@ -112,10 +111,11 @@
 
 #' Dispatch ridge+permutation over Y-column batches
 #'
-#' Memory-efficient version of \code{\link{.ridge_dispatch}}. Processes
-#' \code{Y} in column-batches, forwarding to the chosen backend's
-#' \code{ridge_batch()} (RidgeCuda > RidgeFast) or to the in-house
-#' pure-R batched path. Supports HDF5 Y input and streaming HDF5 output.
+#' Memory-efficient version of \code{\link{.ridge_dispatch}}. SecAct owns
+#' the column-batch/streaming loop (\code{.ridge_pureR_batch}) and computes
+#' each batch with \code{FlashReg::ridge()} on the fast backends
+#' (\code{cuda_native} / \code{omp}) or \code{.ridge_pureR} on the pure-R
+#' fallback. Supports HDF5 Y input and streaming HDF5 output.
 #'
 #' @keywords internal
 .ridge_batch_dispatch <- function(X, Y, lambda, nrand,
@@ -132,26 +132,25 @@
             " (batch_size=", batch_size, ", rng_method=", rng_method, ")")
   }
 
-  if (chosen == "gpu") {
-    RidgeCuda::ridge_batch(X = X, Y = Y, lambda = lambda, nrand = nrand,
-                           ncores = ncores, rng_method = rng_method,
-                           batch_size = batch_size, reader = reader,
-                           n_samples = n_samples, output_h5 = output_h5)
-  } else if (chosen == "cpu-fast") {
-    RidgeFast::ridge_batch(X = X, Y = Y, lambda = lambda, nrand = nrand,
-                           ncores = ncores, rng_method = rng_method,
-                           batch_size = batch_size, reader = reader,
-                           n_samples = n_samples, output_h5 = output_h5)
+  # SecAct owns the column-batch/streaming loop (reader / HDF5 in and out); the
+  # per-batch compute is FlashReg on the fast backends, else pure-R. Batching is
+  # bit-identical to a single call (stats are per-column; T is re-derived from X).
+  fr_backend <- switch(chosen, "gpu" = "cuda_native", "cpu-fast" = "omp", NULL)
+  if (!is.null(fr_backend)) {
+    ridge_fn <- function(Xb, Yb, lambda, nrand)
+      FlashReg::ridge(X = Xb, Y = Yb, lambda = lambda, n_perm = nrand,
+                      backend = fr_backend, ncores = ncores, rng_method = rng_method)
   } else {
     if (rng_method != "mt19937") {
-      stop("rng_method='", rng_method, "' requires RidgeFast or RidgeCuda; ",
+      stop("rng_method='", rng_method, "' requires FlashReg; ",
            "pure-R supports only 'mt19937'.")
     }
-    .ridge_pureR_batch(X, Y, lambda, nrand,
-                       batch_size = batch_size,
-                       reader = reader, n_samples = n_samples,
-                       output_h5 = output_h5)
+    ridge_fn <- .ridge_pureR
   }
+  .ridge_pureR_batch(X, Y, lambda, nrand,
+                     batch_size = batch_size,
+                     reader = reader, n_samples = n_samples,
+                     output_h5 = output_h5, ridge_fn = ridge_fn)
 }
 
 #' Pure-R batched ridge+permutation
@@ -166,7 +165,8 @@
 .ridge_pureR_batch <- function(X, Y, lambda, nrand,
                                batch_size = 5000L,
                                reader = NULL, n_samples = NULL,
-                               output_h5 = NULL) {
+                               output_h5 = NULL,
+                               ridge_fn = .ridge_pureR) {
   if (!is.matrix(X)) X <- as.matrix(X)
   storage.mode(X) <- "double"
   n <- nrow(X); p <- ncol(X)
@@ -211,7 +211,7 @@
     storage.mode(Y_batch) <- "double"
     if (is.null(colnames(Y_batch))) colnames(Y_batch) <- samp_names[s:e]
 
-    res <- .ridge_pureR(X, Y_batch, lambda, nrand)
+    res <- ridge_fn(X, Y_batch, lambda, nrand)
 
     if (h5_out) {
       for (nm in c("beta", "se", "zscore", "pvalue")) {
