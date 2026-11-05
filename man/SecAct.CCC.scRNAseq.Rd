@@ -19,7 +19,7 @@ SecAct.CCC.scRNAseq(
   sigMatrix = "SecAct",
   is.group.sig = TRUE,
   is.group.cor = 0.9,
-  lambda = 5e+05,
+  lambda = NULL,
   nrand = 1000
 )
 }
@@ -52,7 +52,7 @@ SecAct.CCC.scRNAseq(
 
 \item{is.group.cor}{Correlation cutoff of similar signatures.}
 
-\item{lambda}{Penalty factor in the ridge regression.}
+\item{lambda}{Penalty factor in the ridge regression. If NULL (default), lambda is 10000 when sigMatrix = "CytoSig" and 5e+05 otherwise.}
 
 \item{nrand}{Number of randomization in the permutation test, with a default value 1000.}
 }

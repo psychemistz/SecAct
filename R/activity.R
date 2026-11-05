@@ -8,8 +8,10 @@
 #' @param sigMatrix Secreted protein signature matrix. Could be "SecAct", "CytoSig", "SecAct-Breast", "SecAct-Colorectal", "SecAct-Glioblastoma", "SecAct-Kidney", "SecAct-Liver", "SecAct-Lung-Adeno", "SecAct-Ovarian", "SecAct-Pancreatic", "SecAct-Prostate". SecAct signatures were derived from all cancer ST samples; SecAct-XXX signatures were derived from XXX cancer ST samples.
 #' @param is.filter.sig A logical flag indicating whether to filter the secreted protein signatures based on the genes from inputProfile (Default: FALSE). Because some sequencing platforms (e.g., CosMx) cover only a subset of secreted proteins, setting this option to TRUE restricts the activity inference on those proteins.
 #' @param is.group.sig A logical flag indicating whether to group similar signatures (Default: TRUE). Many secreted proteins, such as cytokines with similar cell surface receptors and downstream pathways, have cellular effects that appear redundant within a cellular context. When enabled, this option clusters secreted proteins based on Pearson correlations among their composite signatures. The output still reports activity estimates for all secreted proteins prior to clustering. Secreted proteins assigned to the same non-redundant cluster share the same inferred activity.
-#' @param is.group.cor A numeric value specifying the correlation cutoff used to define similar signatures (Default: 0.90). When r > 0.90, 1,170 secreted protein signatures are grouped into 657 non-redundant signature groups.
-#' @param lambda Penalty factor in the ridge regression. If NULL, lambda will be assigned as 5e+05 or 10000 when sigMatrix = "SecAct" or "CytoSig", respectively.
+#' @param is.group.cor A numeric value specifying the correlation cutoff used to define similar signatures (Default: 0.90). When r > 0.90, 1,170 secreted protein signatures are grouped into 657 non-redundant signature groups. Grouping is computed on the genes shared by the input and the signature matrix, so the groups can differ between inputs.
+#' @param lambda Penalty factor in the ridge regression. If NULL (default), lambda is 10000 when sigMatrix = "CytoSig" and 5e+05 otherwise (SecAct, SecAct-XXX, or a custom signature file).
+#' @param lambda_scale How lambda relates to the number of overlapping genes. \code{"none"} (default) uses lambda as given. \code{"overlap"} multiplies lambda by \code{(n_overlap - 1) / (n_ref - 1)}, where \code{n_overlap} is the number of genes shared by the input and the signature matrix and \code{n_ref} is the number of genes (rows) in the signature matrix. Because the columns of X are scaled over the overlapping genes, the diagonal of X'X is \code{n_overlap - 1}; this option keeps the relative shrinkage equal to that of a full-panel input, for which lambda was tuned.
+#' @param pvalue How p-values are computed. \code{"permutation"} (default) is \code{(count + 1) / (nrand + 1)}, floored at \code{1/(nrand+1)}: with nrand = 1000 every |z| above about 3.3 ties at about 0.001, so FDR computed on these p-values cannot rank strong hits. \code{"normal"} is \code{2 * pnorm(-abs(zscore))}, using the permutation z-score.
 #' @param nrand Number of randomization in the permutation test, with a default value of 1000.
 #' @param ncores Number of threads for accelerator backends (ignored by pure R). Default 1.
 #' @param backend One of \code{"auto"}, \code{"gpu"}, \code{"cpu-fast"}, \code{"cpu-pure"}.
@@ -50,7 +52,9 @@ SecAct.activity.inference <- function(
   is.filter.sig=FALSE,
   is.group.sig=TRUE,
   is.group.cor=0.9,
-  lambda=5e+05,
+  lambda=NULL,
+  lambda_scale=c("none","overlap"),
+  pvalue=c("permutation","normal"),
   nrand=1000,
   ncores=1L,
   backend="auto",
@@ -67,6 +71,15 @@ SecAct.activity.inference <- function(
   {
     stop("Please use 'SecAct.activity.inference.scRNAseq'.")
   }
+
+  lambda_scale <- match.arg(lambda_scale)
+  pvalue <- match.arg(pvalue)
+  if (!is.null(output_h5) && pvalue == "normal") {
+    stop("pvalue='normal' is not supported with output_h5; compute 2*pnorm(-abs(zscore)) from the HDF5 output.")
+  }
+
+  inputProfile <- dedup_input(inputProfile, "inputProfile")
+  if(!is.null(inputProfile_control)) inputProfile_control <- dedup_input(inputProfile_control, "inputProfile_control")
 
   if(is.differential)
   {
@@ -98,22 +111,43 @@ SecAct.activity.inference <- function(
   sig <- load_sig_matrix(sigMatrix, lambda)
   X <- sig$X
   lambda <- sig$lambda
+  n_ref <- nrow(X)
+  input_genes <- rownames(Y)
 
   olp <- intersect(rownames(Y),rownames(X))
+  Y <- as.matrix(Y[olp,,drop=F])
+
+  na_row <- rowSums(is.na(Y)) > 0
+  if(any(na_row))
+  {
+    warning(sum(na_row), " of ", length(olp), " overlapping genes have NA in at least one sample and were dropped from all samples.", call.=FALSE)
+    Y <- Y[!na_row,,drop=F]
+    olp <- olp[!na_row]
+  }
   if(length(olp)<20) stop("The overlapped genes between your expression matrix and our signature matrix are too few!")
 
   if(is.filter.sig==TRUE)
   {
-    X <- X[,colnames(X)%in%rownames(Y)]
+    X <- X[,colnames(X)%in%input_genes]
   }
+
+  X <- X[olp,,drop=F]
 
   if(is.group.sig==TRUE)
   {
     X <- cluster_signatures(X,is.group.cor)
   }
 
-  X <- as.matrix(X[olp,,drop=F])
-  Y <- as.matrix(Y[olp,,drop=F])
+  X <- as.matrix(X)
+
+  zero_var <- apply(Y, 2, function(y) all(y == y[1]))
+  if(any(zero_var))
+  {
+    warning(sum(zero_var), " sample(s) have zero variance over the overlapping genes; their outputs are NaN: ",
+            paste(utils::head(colnames(Y)[zero_var], 5), collapse=", "), call.=FALSE)
+  }
+
+  if(lambda_scale == "overlap") lambda <- lambda * (length(olp) - 1) / (n_ref - 1)
 
   X <- scale(X)
   Y <- scale(Y)
@@ -134,6 +168,8 @@ SecAct.activity.inference <- function(
                            ncores = ncores, rng_method = rng_method, backend = backend)
   }
 
+  if(pvalue == "normal") res$pvalue[] <- 2 * stats::pnorm(-abs(res$zscore))
+
   if(is.group.sig==TRUE)
   {
     for(nm in names(res)) res[[nm]] <- expand_rows(res[[nm]])
@@ -153,8 +189,10 @@ SecAct.activity.inference <- function(
 #' @param sigMatrix Secreted protein signature matrix. Could be "SecAct", "CytoSig", "SecAct-Breast", "SecAct-Colorectal", "SecAct-Glioblastoma", "SecAct-Kidney", "SecAct-Liver", "SecAct-Lung-Adeno", "SecAct-Ovarian", "SecAct-Pancreatic", "SecAct-Prostate". SecAct signatures were derived from all cancer ST samples; SecAct-XXX signatures were derived from XXX cancer ST samples.
 #' @param is.filter.sig A logical flag indicating whether to filter the secreted protein signatures based on the genes from inputProfile (Default: FALSE). Because some sequencing platforms (e.g., CosMx) cover only a subset of secreted proteins, setting this option to TRUE restricts the activity inference on those proteins.
 #' @param is.group.sig A logical flag indicating whether to group similar signatures (Default: TRUE). Many secreted proteins, such as cytokines with similar cell surface receptors and downstream pathways, have cellular effects that appear redundant within a cellular context. When enabled, this option clusters secreted proteins based on Pearson correlations among their composite signatures. The output still reports activity estimates for all secreted proteins prior to clustering. Secreted proteins assigned to the same non-redundant cluster share the same inferred activity.
-#' @param is.group.cor A numeric value specifying the correlation cutoff used to define similar signatures (Default: 0.90). When r > 0.90, 1,170 secreted protein signatures are grouped into 657 non-redundant signature groups.
-#' @param lambda Penalty factor in the ridge regression. If NULL, lambda will be assigned as 5e+05 or 10000 when sigMatrix = "SecAct" or "CytoSig", respectively.
+#' @param is.group.cor A numeric value specifying the correlation cutoff used to define similar signatures (Default: 0.90). When r > 0.90, 1,170 secreted protein signatures are grouped into 657 non-redundant signature groups. Grouping is computed on the genes shared by the input and the signature matrix, so the groups can differ between inputs.
+#' @param lambda Penalty factor in the ridge regression. If NULL (default), lambda is 10000 when sigMatrix = "CytoSig" and 5e+05 otherwise (SecAct, SecAct-XXX, or a custom signature file).
+#' @param lambda_scale How lambda relates to the number of overlapping genes. \code{"none"} (default) uses lambda as given. \code{"overlap"} multiplies lambda by \code{(n_overlap - 1) / (n_ref - 1)}, where \code{n_overlap} is the number of genes shared by the input and the signature matrix and \code{n_ref} is the number of genes (rows) in the signature matrix. Because the columns of X are scaled over the overlapping genes, the diagonal of X'X is \code{n_overlap - 1}; this option keeps the relative shrinkage equal to that of a full-panel input, for which lambda was tuned.
+#' @param pvalue How p-values are computed. \code{"permutation"} (default) is \code{(count + 1) / (nrand + 1)}, floored at \code{1/(nrand+1)}: with nrand = 1000 every |z| above about 3.3 ties at about 0.001, so FDR computed on these p-values cannot rank strong hits. \code{"normal"} is \code{2 * pnorm(-abs(zscore))}, using the permutation z-score.
 #' @param nrand Number of randomization in the permutation test, with a default value 1000.
 #' @param ncores Number of threads for accelerator backends (ignored by pure R). Default 1.
 #' @param backend One of \code{"auto"}, \code{"gpu"}, \code{"cpu-fast"}, \code{"cpu-pure"}.
@@ -180,7 +218,9 @@ SecAct.activity.inference.ST <- function(
     is.filter.sig=FALSE,
     is.group.sig=TRUE,
     is.group.cor=0.9,
-    lambda=5e+05,
+    lambda=NULL,
+  lambda_scale=c("none","overlap"),
+  pvalue=c("permutation","normal"),
     nrand=1000,
     ncores=1L,
     backend="auto",
@@ -228,6 +268,8 @@ SecAct.activity.inference.ST <- function(
     is.group.sig = is.group.sig,
     is.group.cor = is.group.cor,
     lambda = lambda,
+    lambda_scale = lambda_scale,
+    pvalue = pvalue,
     nrand = nrand,
     ncores = ncores,
     backend = backend,
@@ -249,8 +291,10 @@ SecAct.activity.inference.ST <- function(
 #' @param sigMatrix Secreted protein signature matrix. Could be "SecAct", "CytoSig", "SecAct-Breast", "SecAct-Colorectal", "SecAct-Glioblastoma", "SecAct-Kidney", "SecAct-Liver", "SecAct-Lung-Adeno", "SecAct-Ovarian", "SecAct-Pancreatic", "SecAct-Prostate". SecAct signatures were derived from all cancer ST samples; SecAct-XXX signatures were derived from XXX cancer ST samples.
 #' @param is.filter.sig A logical flag indicating whether to filter the secreted protein signatures based on the genes from inputProfile (Default: FALSE). Because some sequencing platforms (e.g., CosMx) cover only a subset of secreted proteins, setting this option to TRUE restricts the activity inference on those proteins.
 #' @param is.group.sig A logical flag indicating whether to group similar signatures (Default: TRUE). Many secreted proteins, such as cytokines with similar cell surface receptors and downstream pathways, have cellular effects that appear redundant within a cellular context. When enabled, this option clusters secreted proteins based on Pearson correlations among their composite signatures. The output still reports activity estimates for all secreted proteins prior to clustering. Secreted proteins assigned to the same non-redundant cluster share the same inferred activity.
-#' @param is.group.cor A numeric value specifying the correlation cutoff used to define similar signatures (Default: 0.90). When r > 0.90, 1,170 secreted protein signatures are grouped into 657 non-redundant signature groups.
-#' @param lambda Penalty factor in the ridge regression. If NULL, lambda will be assigned as 5e+05 or 10000 when sigMatrix = "SecAct" or "CytoSig", respectively.
+#' @param is.group.cor A numeric value specifying the correlation cutoff used to define similar signatures (Default: 0.90). When r > 0.90, 1,170 secreted protein signatures are grouped into 657 non-redundant signature groups. Grouping is computed on the genes shared by the input and the signature matrix, so the groups can differ between inputs.
+#' @param lambda Penalty factor in the ridge regression. If NULL (default), lambda is 10000 when sigMatrix = "CytoSig" and 5e+05 otherwise (SecAct, SecAct-XXX, or a custom signature file).
+#' @param lambda_scale How lambda relates to the number of overlapping genes. \code{"none"} (default) uses lambda as given. \code{"overlap"} multiplies lambda by \code{(n_overlap - 1) / (n_ref - 1)}, where \code{n_overlap} is the number of genes shared by the input and the signature matrix and \code{n_ref} is the number of genes (rows) in the signature matrix. Because the columns of X are scaled over the overlapping genes, the diagonal of X'X is \code{n_overlap - 1}; this option keeps the relative shrinkage equal to that of a full-panel input, for which lambda was tuned.
+#' @param pvalue How p-values are computed. \code{"permutation"} (default) is \code{(count + 1) / (nrand + 1)}, floored at \code{1/(nrand+1)}: with nrand = 1000 every |z| above about 3.3 ties at about 0.001, so FDR computed on these p-values cannot rank strong hits. \code{"normal"} is \code{2 * pnorm(-abs(zscore))}, using the permutation z-score.
 #' @param nrand Number of randomization in the permutation test, with a default value 1000.
 #' @param ncores Number of threads for accelerator backends (ignored by pure R). Default 1.
 #' @param backend One of \code{"auto"}, \code{"gpu"}, \code{"cpu-fast"}, \code{"cpu-pure"}.
@@ -276,7 +320,9 @@ SecAct.activity.inference.scRNAseq <- function(
     is.filter.sig=FALSE,
     is.group.sig=TRUE,
     is.group.cor=0.9,
-    lambda=5e+05,
+    lambda=NULL,
+  lambda_scale=c("none","overlap"),
+  pvalue=c("permutation","normal"),
     nrand=1000,
     ncores=1L,
     backend="auto",
@@ -331,6 +377,8 @@ SecAct.activity.inference.scRNAseq <- function(
     is.group.sig = is.group.sig,
     is.group.cor = is.group.cor,
     lambda = lambda,
+    lambda_scale = lambda_scale,
+    pvalue = pvalue,
     nrand = nrand,
     ncores = ncores,
     backend = backend,

@@ -45,8 +45,8 @@ rm_duplicates <- function(mat)
     for(gene in gene_dupl)
     {
       gene_dupl_index_gene <- which(rownames(mat)%in%gene)
-      mat_dupl_gene <- mat[gene_dupl_index_gene,]
-      dupl_sum <- Matrix::rowSums(mat_dupl_gene)
+      mat_dupl_gene <- mat[gene_dupl_index_gene,,drop=FALSE]
+      dupl_sum <- Matrix::rowSums(mat_dupl_gene, na.rm=TRUE)
       max_flag <- which(dupl_sum==max(dupl_sum))
       gene_dupl_index <- c(gene_dupl_index,gene_dupl_index_gene[max_flag[1]])
     }
@@ -55,6 +55,15 @@ rm_duplicates <- function(mat)
   }
 
   return(mat)
+}
+
+# Duplicate gene symbols: keep the row with the largest sum, as the ST/scRNA paths do.
+dedup_input <- function(mat, what)
+{
+  dup <- duplicated(rownames(mat))
+  if(!any(dup)) return(mat)
+  warning(what, " has ", length(unique(rownames(mat)[dup])), " duplicated gene symbol(s); keeping the row with the largest sum for each.", call.=FALSE)
+  rm_duplicates(mat)
 }
 
 scalar1 <- function(x)
@@ -197,7 +206,11 @@ load_sig_matrix <- function(sigMatrix, lambda = NULL)
 
   }else{
     X <- read.table(sigMatrix, sep="\t", check.names=FALSE)
+    if(is.null(lambda)) lambda <- 5e+05
   }
+
+  if(!is.numeric(lambda) || length(lambda) != 1 || is.na(lambda) || lambda < 0)
+    stop("'lambda' must be NULL or a single non-negative number.")
 
   list(X = X, lambda = lambda)
 }

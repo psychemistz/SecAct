@@ -36,6 +36,9 @@
 
   aver <- aver / nrand
   aver_sq <- aver_sq / nrand
+  # Population SD of the null (divisor nrand, not nrand - 1), as in SecAct 1.0.0
+  # and RidgeFast/RidgeCuda; the sample SD would be larger by sqrt(nrand/(nrand-1)).
+  # Kept for reproducibility of published outputs.
   se <- sqrt(aver_sq - aver^2)
   zscore <- (beta - aver) / se
   pvalue <- (pvalue_count + 1) / (nrand + 1)

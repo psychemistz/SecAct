@@ -772,7 +772,7 @@ SecAct.CCC.scST <- function(
 #' @param sigMatrix Secreted protein signature matrix.
 #' @param is.group.sig A logical flag indicating whether to group similar signatures.
 #' @param is.group.cor Correlation cutoff of similar signatures.
-#' @param lambda Penalty factor in the ridge regression.
+#' @param lambda Penalty factor in the ridge regression. If NULL (default), lambda is 10000 when sigMatrix = "CytoSig" and 5e+05 otherwise.
 #' @param nrand Number of randomization in the permutation test, with a default value 1000.
 #' @return A Seurat object.
 #' @rdname SecAct.CCC.scRNAseq
@@ -793,7 +793,7 @@ SecAct.CCC.scRNAseq <- function(
   sigMatrix="SecAct",
   is.group.sig=TRUE,
   is.group.cor=0.9,
-  lambda=5e+05,
+  lambda=NULL,
   nrand=1000
 )
 {
